@@ -1,6 +1,7 @@
 module EventLog
     ( -- * Event log
       EventLog
+    , hdrEventTypes
     , fromFile
       -- * Event types
     , EventType
@@ -51,9 +52,7 @@ fromFile path = do
     bs <- mmapFileByteStringLazy path Nothing
     case runGetOrFail header bs of
       Left (_, _, err) -> return $ Left err
-      Right (rest, _, hdr) -> do print hdr
-                                 print rest
-                                 return $ Right $ EventLog hdr rest
+      Right (rest, _, hdr) -> return $ Right $ EventLog hdr rest
 
 -- | An event type number
 newtype EventType = EventType Word16
