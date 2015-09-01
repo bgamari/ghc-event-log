@@ -5,7 +5,10 @@ module EventLog
     , fromFile
       -- * Event types
     , EventType
-    , EventTypeDef(..)
+    , EventTypeDef
+    , evtEventType
+    , evtDescription
+    , evtExtra
       -- * Events
     , Ref
     , Record(..)
