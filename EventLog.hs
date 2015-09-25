@@ -49,7 +49,9 @@ fromFile :: FilePath -> IO (Either String EventLog)
 fromFile path = do
     -- we aren't really using laziness here, but binary expects its input as a
     -- lazy bytestring so this is the path of least resistance.
-    bs <- mmapFileByteStringLazy path Nothing
+    --bs <- mmapFileByteStringLazy path Nothing
+    --bs <- BSL.fromStrict <$> mmapFileByteString path Nothing
+    bs <- BSL.readFile path
     case runGetOrFail header bs of
       Left (_, _, err) -> return $ Left err
       Right (rest, _, hdr) -> return $ Right $ EventLog hdr rest
@@ -117,7 +119,7 @@ eventTypeDef = do
 -- | An event in a GHC event log
 data Record = Record { recEventType :: EventTypeDef
                      , recTime      :: Word64
-                     , recBody      :: BS.ByteString
+                     , recBody      :: BSL.ByteString
                      }
             deriving (Show)
 
@@ -128,15 +130,18 @@ recordOrEnd hdr = end <|> fmap Just (record hdr)
 -- | Decoder for a 'Record'
 record :: Header -> Get Record
 record hdr = do
+    let pad s | length s == 2 = '0':s
+              | otherwise = s
+
     etNum <- EventType <$> get
     time <- get
     et <- case etNum `M.lookup` hdrEventTypes hdr of
       Nothing -> fail $ "Unknown event type "++show etNum
       Just e -> return e
     len <- case evtSize et of
-      -1 -> get :: Get Word16
+      -1 -> fromIntegral <$> (get :: Get Word16)
       n  -> return $ fromIntegral n
-    body <- getByteString (fromIntegral len)
+    body <- getLazyByteString len
     return $ Record et time body
 
 -- | Produce all records in an 'EventLog'
