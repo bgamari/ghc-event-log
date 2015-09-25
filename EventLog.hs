@@ -4,11 +4,8 @@ module EventLog
     , hdrEventTypes
     , fromFile
       -- * Event types
-    , EventType
-    , EventTypeDef
-    , evtEventType
-    , evtDescription
-    , evtExtra
+    , EventType(..)
+    , EventTypeDef(..)
       -- * Events
     , Ref
     , Record(..)
