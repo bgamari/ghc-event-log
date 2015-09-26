@@ -11,16 +11,16 @@ import qualified RangeMap as RM
 import EventLog
 import Profiler
 
-
 main = do
     hSetBuffering stderr NoBuffering
     evlog <- either error id <$> fromFile "test.eventlog"
     --runEffect $ for (records evlog) $ \(_,r) -> liftIO $ print r
     --PP.foldM (\indent -> printTree indent . snd) (pure 0) pure (records evlog)
     --histogram (records evlog >-> PP.map snd) >>= putStrLn . unlines . map show . M.assocs
+    --runEffect $ for (records evlog >-> PP.map snd >-> getSamples) (liftIO . mapM_ (\(Sample addr _) -> print addr))
     blks <- PP.toListM $ parseBlocks $ records evlog >-> PP.map snd
     let blkMap = blocksToBlockMap blks
-    hist <- histogram (records evlog >-> PP.map snd)
+    hist <- histogram (records evlog >-> PP.map snd >-> getSamples)
     --putStrLn $ unlines $ map show $ M.assocs hist
     let showHistAddr (addr, n) =
           let blks = RM.values $ RM.Rng addr addr `RM.containing` blkMap

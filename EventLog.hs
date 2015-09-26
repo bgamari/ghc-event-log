@@ -148,6 +148,7 @@ record hdr = do
 records :: (MonadIO m)
         => EventLog -> Producer (Ref Record, Record) m ()
 records log = recordsFrom log (Ref 0)
+{-# INLINE records #-}
 
 -- | Produce all records in an 'EventLog' starting with the record pointed
 -- to by the given reference.
@@ -163,3 +164,4 @@ recordsFrom log (Ref offset0) =
               yield (Ref $ fromIntegral offset, r)
               go rest (offset + nBytes)
           Right (rest, nBytes, Nothing) -> return ()
+{-# INLINE recordsFrom #-}

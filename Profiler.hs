@@ -1,11 +1,17 @@
 {-# LANGUAGE BangPatterns #-}
 
-module Profiler ( parseBlocks, Block(..)
-                , blocksToBlockMap, BlockMap
-                , Address
-                , histogram, Histogram
-                ) where
+module Profiler
+    ( -- * Parsing program metdata
+      parseBlocks, Block(..)
+    , blocksToBlockMap, BlockMap
+      -- * Parsing samples
+    , getSamples, Sample(..), Address(..)
+      -- * Histogramming samples
+    , histogram, Histogram
+    ) where
 
+import Control.Applicative (many)
+import Control.Monad (forever)
 import Data.Bits
 import Data.Word
 import Data.Monoid
@@ -13,6 +19,7 @@ import Data.Foldable
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as M
+import Numeric (showHex)
 
 import Data.Binary.Get
 import Pipes
@@ -23,7 +30,11 @@ import EventLog
 import qualified RangeMap as RM
 import RangeMap (RangeMap, Range(..))
 
-type Address = Word64
+newtype Address = Addr Word64
+                deriving (Ord, Eq)
+
+instance Show Address where
+  showsPrec _ (Addr n) = showHex n
 
 type BlockMap = RM.RangeMap Address Block
 
@@ -77,43 +88,52 @@ parseBlocks = evalStateT go
         Nothing -> return blk
 
     getRange :: Get (Range Address)
-    getRange = Rng <$> getWord64be <*> getWord64be
+    getRange = Rng <$> getAddress <*> getAddress
+
+getAddress :: Get Address
+getAddress = Addr <$> getWord64be
 
 type Histogram = M.Map Address Int
 
-histogram :: Monad m => Producer Record m () -> m Histogram
-histogram producer = PP.fold go M.empty id producer
+histogram :: Monad m => Producer [Sample] m () -> m Histogram
+histogram = PP.fold (foldr addSample) M.empty id
   where
-    go :: Histogram -> Record -> Histogram
-    go hist r
-      | Just samps <- getSamples r = foldr addSample hist samps
-      | otherwise                  = hist
-      where
-        addSample (Sample addr weight) = M.insertWith (+) addr weight
+    addSample (Sample addr weight) = M.insertWith (+) addr weight
+{-# INLINE histogram #-}
+
+getSamples :: Monad m => Pipe Record [Sample] m ()
+getSamples = forever $ await >>= go
+  where
+    go r
+      | r `isOfType` 210 = yield $ decodeSamples $ BSL.drop 4 $ recBody r
+      | otherwise        = return ()
+{-# INLINE getSamples #-}
 
 data Sample = Sample !Address !Int
+            deriving (Show)
 
-getSamples :: Record -> Maybe [Sample]
-getSamples r
-  | r `isOfType` 210 = Just $ go 0 $ BSL.drop 4 $ recBody r
-  | otherwise        = Nothing
+decodeSamples :: BSL.ByteString -> [Sample]
+decodeSamples = go (Addr 0)
   where
+    go' _ bs = case runGetOrFail (many getAddress) bs of
+      Right (bs', _, xs) -> map (\addr -> Sample addr 1) xs
+
     go lastAddr bs
       | BSL.null bs = []
       | otherwise = case runGetOrFail (getSample lastAddr) bs of
           Right (bs', _, s@(Sample addr _)) -> s : go addr bs'
           Left (bs', _, err) -> error err
 
-    getSample lastAddr = do
+    getSample (Addr lastAddr) = do
       header <- getWord8
       let sampleEncoding = header `shiftR` 4
           weightEncoding = header .&. 0xf
 
-      addr <- case sampleEncoding of
+      addr <- Addr <$> case sampleEncoding of
         0 -> (lastAddr +) . fromIntegral <$> getWord8
         1 -> (lastAddr -) . fromIntegral <$> getWord8
         4 -> (lastAddr +) . fromIntegral <$> getWord32be
-        5 -> (lastAddr +) . fromIntegral <$> getWord32be
+        5 -> (lastAddr -) . fromIntegral <$> getWord32be
         15 -> getWord64be
         _  -> fail "Failed to decode sample"
 
