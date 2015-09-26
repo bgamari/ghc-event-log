@@ -38,6 +38,7 @@ expectMagic magic = do
     m <- get
     when (m /= magic) $
         fail $ "Invalid magic number: expected "++showHex magic ""++" saw "++showHex m ""
+{-# INLINE expectMagic #-}
 
 -- | A GHC event log
 data EventLog = EventLog { logHeader :: Header
@@ -126,6 +127,7 @@ data Record = Record { recEventType :: EventTypeDef
 recordOrEnd :: Header -> Get (Maybe Record)
 recordOrEnd hdr = end <|> fmap Just (record hdr)
   where end = expectMagic (0xffff :: Word16) *> pure Nothing
+{-# INLINE recordOrEnd #-}
 
 -- | Decoder for a 'Record'
 record :: Header -> Get Record
