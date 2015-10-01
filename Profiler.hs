@@ -17,6 +17,7 @@ import Data.Word
 import Data.Monoid
 import Data.Foldable
 import qualified Data.ByteString.Lazy as BSL
+import qualified Data.ByteString.Short as BSS
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as M
 import Numeric (showHex)
@@ -38,7 +39,7 @@ instance Show Address where
 
 type BlockMap = RM.RangeMap Address Block
 
-data Block = Block { blkName :: !BS.ByteString
+data Block = Block { blkName :: !BSS.ShortByteString
                    , blkChildren :: [Block]
                    , blkRegions :: [Range Address]
                    }
@@ -66,7 +67,7 @@ parseBlocks = evalStateT go
       case res of
         Just r
           | r `isOfType` 200 -> do
-              blk <- goBlockBody $ Block (BSL.toStrict $ recBody r) mempty mempty
+              blk <- goBlockBody $ Block (BSS.toShort $ BSL.toStrict $ recBody r) mempty mempty
               return $ Just blk
           | otherwise -> goBlock
         _ -> return Nothing
@@ -76,12 +77,13 @@ parseBlocks = evalStateT go
       case res of
         Just r
           | r `isOfType` 200 -> do
-              child <- goBlockBody $ Block (BSL.toStrict $ recBody r) mempty mempty
+              child <- goBlockBody $ Block (BSS.toShort $ BSL.toStrict $ recBody r) mempty mempty
               goBlockBody $ blk { blkChildren = child : blkChildren blk }
           | r `isOfType` 201 ->
               return blk
           | r `isOfType` 202 -> do
               let Right (_, _, rng) = runGetOrFail getRange (recBody r)
+              rng `seq` return ()
               goBlockBody $ blk { blkRegions = rng : blkRegions blk }
           | otherwise        ->
               goBlockBody blk

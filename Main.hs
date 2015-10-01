@@ -26,6 +26,7 @@ main = do
           let blks = RM.values $ RM.Rng addr addr `RM.containing` blkMap
           in show (n, addr, map blkName blks)
     mapM_ (putStrLn . showHistAddr) $ sortBy (flip $ comparing snd) $ M.assocs hist
+    return ()
 
 printTree :: Int -> Record -> IO Int
 printTree n r
