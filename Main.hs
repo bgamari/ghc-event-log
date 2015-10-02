@@ -7,7 +7,7 @@ import Control.Arrow (first)
 
 import Data.List (sortBy)
 import Data.Ord (comparing)
-import qualified RangeMap as RM
+import qualified IntRangeMap as RM
 import EventLog
 import Profiler
 
@@ -18,12 +18,13 @@ main = do
     --PP.foldM (\indent -> printTree indent . snd) (pure 0) pure (records evlog)
     --histogram (records evlog >-> PP.map snd) >>= putStrLn . unlines . map show . M.assocs
     --runEffect $ for (records evlog >-> PP.map snd >-> getSamples) (liftIO . mapM_ (\(Sample addr _) -> print addr))
-    blks <- PP.toListM $ parseBlocks $ records evlog >-> PP.map snd
-    let blkMap = blocksToBlockMap blks
-    hist <- histogram (records evlog >-> PP.map snd >-> getSamples)
+    (blkMap,_) <- {-# SCC "blks" #-}
+              PP.fold' (\a b -> a `mappend` blockToBlockMap b) mempty id
+              $ parseBlocks $ {-# SCC "records" #-}records evlog >-> PP.map snd
+    hist <- {-# SCC "hist" #-}histogram (records evlog >-> PP.map snd >-> getSamples)
     --putStrLn $ unlines $ map show $ M.assocs hist
     let showHistAddr (addr, n) =
-          let blks = RM.values $ RM.Rng addr addr `RM.containing` blkMap
+          let blks = RM.values $ addrRange addr addr `RM.containing` blkMap
           in show (n, addr, map blkName blks)
     mapM_ (putStrLn . showHistAddr) $ sortBy (flip $ comparing snd) $ M.assocs hist
     return ()

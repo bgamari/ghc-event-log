@@ -3,9 +3,9 @@
 module Profiler
     ( -- * Parsing program metdata
       parseBlocks, Block(..)
-    , blocksToBlockMap, BlockMap
+    , blockToBlockMap, BlockMap
       -- * Parsing samples
-    , getSamples, Sample(..), Address(..)
+    , getSamples, Sample(..), Address(..), addrRange
       -- * Histogramming samples
     , histogram, Histogram
     ) where
@@ -28,28 +28,26 @@ import Pipes.Parse
 import qualified Pipes.Prelude as PP
 
 import EventLog
-import qualified RangeMap as RM
-import RangeMap (RangeMap, Range(..))
+import qualified IntRangeMap as RM
+import IntRangeMap (RangeMap, Range(..))
 
-newtype Address = Addr Word64
+newtype Address = Addr Int
                 deriving (Ord, Eq)
 
 instance Show Address where
   showsPrec _ (Addr n) = showHex n
 
-type BlockMap = RM.RangeMap Address Block
+type BlockMap = RM.RangeMap Block
 
-data Block = Block { blkName :: !BSS.ShortByteString
+data Block = Block { blkName :: {-# UNPACK #-} !BSS.ShortByteString
                    , blkChildren :: [Block]
-                   , blkRegions :: [Range Address]
+                   , blkRegions :: [Range]
                    }
 
-blocksToBlockMap :: [Block] -> BlockMap
-blocksToBlockMap = foldMap go
+blockToBlockMap :: Block -> BlockMap
+blockToBlockMap = go
   where
-    go :: Block -> BlockMap
-    go blk =
-      foldMap (`RM.singleton` blk) (blkRegions blk) <> foldMap go (blkChildren blk)
+    go blk = foldMap (`RM.singleton` blk) (blkRegions blk) <> foldMap go (blkChildren blk)
 
 parseBlocks :: Monad m => Producer Record (Producer Block m) () -> Producer Block m ()
 parseBlocks = evalStateT go
@@ -72,7 +70,7 @@ parseBlocks = evalStateT go
           | otherwise -> goBlock
         _ -> return Nothing
 
-    goBlockBody blk = do
+    goBlockBody !blk = do
       res <- draw
       case res of
         Just r
@@ -83,17 +81,20 @@ parseBlocks = evalStateT go
               return blk
           | r `isOfType` 202 -> do
               let Right (_, _, rng) = runGetOrFail getRange (recBody r)
-              rng `seq` return ()
-              goBlockBody $ blk { blkRegions = rng : blkRegions blk }
+              rng `seq` goBlockBody blk { blkRegions = rng : blkRegions blk }
           | otherwise        ->
               goBlockBody blk
         Nothing -> return blk
 
-    getRange :: Get (Range Address)
-    getRange = Rng <$> getAddress <*> getAddress
+    getRange :: Get Range
+    getRange = addrRange <$> getAddress <*> getAddress
+{-# INLINEABLE parseBlocks #-}
+
+addrRange :: Address -> Address -> Range
+addrRange (Addr a) (Addr b) = Rng a b
 
 getAddress :: Get Address
-getAddress = Addr <$> getWord64be
+getAddress = Addr . fromIntegral <$> getWord64be
 
 type Histogram = M.Map Address Int
 
@@ -101,15 +102,15 @@ histogram :: Monad m => Producer [Sample] m () -> m Histogram
 histogram = PP.fold (foldr addSample) M.empty id
   where
     addSample (Sample addr weight) = M.insertWith (+) addr weight
-{-# INLINE histogram #-}
+{-# INLINEABLE histogram #-}
 
 getSamples :: Monad m => Pipe Record [Sample] m ()
-getSamples = forever $ await >>= go
+getSamples = {-# SCC "getSamples" #-} forever $ await >>= go
   where
     go r
       | r `isOfType` 210 = yield $ decodeSamples $ BSL.drop 4 $ recBody r
       | otherwise        = return ()
-{-# INLINE getSamples #-}
+{-# INLINEABLE getSamples #-}
 
 data Sample = Sample !Address !Int
             deriving (Show)
@@ -136,7 +137,7 @@ decodeSamples = go (Addr 0)
         1 -> (lastAddr -) . fromIntegral <$> getWord8
         4 -> (lastAddr +) . fromIntegral <$> getWord32be
         5 -> (lastAddr -) . fromIntegral <$> getWord32be
-        15 -> getWord64be
+        15 ->               fromIntegral <$> getWord64be
         _  -> fail "Failed to decode sample"
 
       weight <- case weightEncoding of

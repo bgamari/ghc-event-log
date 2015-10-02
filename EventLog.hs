@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module EventLog
     ( -- * Event log
       EventLog
@@ -38,11 +40,10 @@ expectMagic magic = do
     m <- get
     when (m /= magic) $
         fail $ "Invalid magic number: expected "++showHex magic ""++" saw "++showHex m ""
-{-# INLINE expectMagic #-}
 
 -- | A GHC event log
-data EventLog = EventLog { logHeader :: Header
-                         , logData   :: BSL.ByteString -- ^ starts at the first record
+data EventLog = EventLog { logHeader :: !Header
+                         , logData   :: !BSL.ByteString -- ^ starts at the first record
                          }
 
 -- | Read an event log from a file
@@ -147,19 +148,19 @@ record hdr = do
     return $ Record et time body
 
 -- | Produce all records in an 'EventLog'
-records :: (MonadIO m)
+records :: (Monad m)
         => EventLog -> Producer (Ref Record, Record) m ()
 records log = recordsFrom log (Ref 0)
 {-# INLINE records #-}
 
 -- | Produce all records in an 'EventLog' starting with the record pointed
 -- to by the given reference.
-recordsFrom :: (MonadIO m)
+recordsFrom :: (Monad m)
             => EventLog -> Ref Record -> Producer (Ref Record, Record) m ()
 recordsFrom log (Ref offset0) =
     go (BSL.drop (fromIntegral offset0) (logData log)) 0
   where
-    go buf offset = do
+    go !buf !offset =
         case runGetOrFail (recordOrEnd $ logHeader log) buf of
           Left (_,_,err)             -> fail err
           Right (rest, nBytes, Just r) -> do
