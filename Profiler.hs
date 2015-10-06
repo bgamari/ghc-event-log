@@ -48,6 +48,7 @@ blockToBlockMap :: Block -> BlockMap
 blockToBlockMap = go
   where
     go blk = foldMap (`RM.singleton` blk) (blkRegions blk) <> foldMap go (blkChildren blk)
+{-# INLINE blockToBlockMap #-}
 
 parseBlocks :: Monad m => Producer Record (Producer Block m) () -> Producer Block m ()
 parseBlocks = evalStateT go

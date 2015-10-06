@@ -14,6 +14,8 @@ module EventLog
       -- * Reading events
     , records
     , recordsFrom
+    , recordsList
+    , recordsListFrom
     ) where
 
 import Pipes
@@ -119,20 +121,25 @@ eventTypeDef = do
                         }
 
 -- | An event in a GHC event log
-data Record = Record { recEventType :: EventTypeDef
-                     , recTime      :: Word64
-                     , recBody      :: BSL.ByteString
+data Record = Record { recEventType :: !EventTypeDef
+                     , recTime      :: !Word64
+                     , recBody      :: !BSL.ByteString
                      }
             deriving (Show)
 
 recordOrEnd :: Header -> Get (Maybe Record)
-recordOrEnd hdr = end <|> fmap Just (record hdr)
-  where end = expectMagic (0xffff :: Word16) *> pure Nothing
-{-# INLINE recordOrEnd #-}
+recordOrEnd hdr = {-# SCC "recordOrEnd" #-}end <|> fmap Just ({-# SCC "rec" #-}record hdr)
+  where end = {-# SCC "end" #-}expectMagic (0xffff :: Word16) *> pure Nothing
+--recordOrEnd hdr = do
+--    next <- {-# SCC "getWord16" #-}lookAhead getWord16be
+--    case next of
+--      0xffff -> return Nothing
+--      _      -> Just <$> {-# SCC "recordI" #-}record hdr
+{-# INLINEABLE recordOrEnd #-}
 
 -- | Decoder for a 'Record'
 record :: Header -> Get Record
-record hdr = do
+record hdr = {-# SCC "record" #-}do
     let pad s | length s == 2 = '0':s
               | otherwise = s
 
@@ -146,12 +153,13 @@ record hdr = do
       n  -> return $ fromIntegral n
     body <- getLazyByteString len
     return $ Record et time body
+{-# INLINEABLE record #-}
 
 -- | Produce all records in an 'EventLog'
 records :: (Monad m)
         => EventLog -> Producer (Ref Record, Record) m ()
 records log = recordsFrom log (Ref 0)
-{-# INLINE records #-}
+{-# INLINEABLE records #-}
 
 -- | Produce all records in an 'EventLog' starting with the record pointed
 -- to by the given reference.
@@ -160,11 +168,30 @@ recordsFrom :: (Monad m)
 recordsFrom log (Ref offset0) =
     go (BSL.drop (fromIntegral offset0) (logData log)) 0
   where
+    {-# NOINLINE go #-}
     go !buf !offset =
-        case runGetOrFail (recordOrEnd $ logHeader log) buf of
+        case {-# SCC "runGet" #-}runGetOrFail (recordOrEnd $ logHeader log) buf of
           Left (_,_,err)             -> fail err
           Right (rest, nBytes, Just r) -> do
               yield (Ref $ fromIntegral offset, r)
               go rest (offset + nBytes)
           Right (rest, nBytes, Nothing) -> return ()
 {-# INLINE recordsFrom #-}
+
+-- | Produce all records in an 'EventLog'
+recordsList :: EventLog -> [(Ref Record, Record)]
+recordsList log = recordsListFrom log (Ref 0)
+{-# INLINEABLE recordsList #-}
+
+recordsListFrom :: EventLog -> Ref Record -> [(Ref Record, Record)]
+recordsListFrom log (Ref offset0) =
+    go (BSL.drop (fromIntegral offset0) (logData log)) 0
+  where
+    {-# NOINLINE go #-}
+    go !buf !offset =
+        case {-# SCC "runGet" #-}runGetOrFail (recordOrEnd $ logHeader log) buf of
+          Left (_,_,err)                -> fail err
+          Right (rest, nBytes, Just r)  ->
+              (Ref $ fromIntegral offset, r) : go rest (offset + nBytes)
+          Right (rest, nBytes, Nothing) -> []
+{-# INLINE recordsListFrom #-}
