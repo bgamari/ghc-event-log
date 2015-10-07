@@ -57,6 +57,12 @@ blockToBlockMap = go
     go blk = foldMap (`RM.singleton` blk) (blkRegions blk) <> foldMap go (blkChildren blk)
 {-# INLINE blockToBlockMap #-}
 
+parseFail :: String -> Get a -> BSL.ByteString -> a
+parseFail thing get bs =
+    case runGetOrFail get bs of
+      Left (_, _, e) -> error $ "Failed to parse "++thing++" from "++show bs++": "++e
+      Right (_, _, r) -> r
+
 parseBlocks :: Monad m => Producer Record (Producer Block m) () -> Producer Block m ()
 parseBlocks = evalStateT go
   where
@@ -90,10 +96,10 @@ parseBlocks = evalStateT go
           | r `isOfType` 201 ->
               return blk
           | r `isOfType` 202 -> do
-              let Right (_, _, rng) = runGetOrFail getRange (recBody r)
+              let rng = parseFail "range" getRange (recBody r)
               rng `seq` goBlockBody blk { blkRegions = rng : blkRegions blk }
           | r `isOfType` 203 -> do
-              let Right (_, _, snote) = runGetOrFail getSourceNote (recBody r)
+              let snote = parseFail "source note" getSourceNote (recBody r)
               snote `seq` goBlockBody blk { blkSrcNotes = snote : blkSrcNotes blk }
           | otherwise        ->
               goBlockBody blk
