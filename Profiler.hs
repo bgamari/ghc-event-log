@@ -4,6 +4,11 @@ module Profiler
     ( -- * Parsing program metdata
       parseBlocks, Block(..)
     , blockToBlockMap, BlockMap
+      -- ** Source notes
+    , SourceNote(..)
+    , LineCol(..)
+    , Span(..)
+      , showSourceNote
       -- * Parsing samples
     , getSamples, Sample(..), Address(..), addrRange
       -- * Histogramming samples
@@ -14,6 +19,7 @@ import Control.Applicative (many)
 import Control.Monad (forever)
 import Data.Bits
 import Data.Word
+import Data.Char -- FIXME
 import Data.Monoid
 import Data.Foldable
 import qualified Data.ByteString.Lazy as BSL
@@ -50,6 +56,12 @@ data Block = Block { blkName :: {-# UNPACK #-} !BSS.ShortByteString
                    , blkRegions :: [Range]
                    , blkSrcNotes :: [SourceNote]
                    }
+
+showSourceNote :: SourceNote -> String
+showSourceNote (SourceNote f (Span s e)) =
+    map (chr . fromIntegral) (BSS.unpack f)++":"++showLC s++"-"++showLC s
+  where
+    showLC (LineCol l c) = show l++"."++show c
 
 blockToBlockMap :: Block -> BlockMap
 blockToBlockMap = go

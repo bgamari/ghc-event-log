@@ -21,14 +21,12 @@ main = do
     (blkMap,_) <- {-# SCC "blks" #-}
               PP.fold' (\a b -> a `mappend` blockToBlockMap b) mempty id
               $ parseBlocks $ {-# SCC "records" #-}records evlog >-> PP.map snd
-    blkMap `seq` print ()
+    hist <- {-# SCC "hist" #-}histogram (each (recordsList evlog) >-> PP.map snd >-> getSamples)
 
-    --hist <- {-# SCC "hist" #-}histogram (each (recordsList evlog) >-> PP.map snd >-> getSamples)
-    --putStrLn $ unlines $ map show $ M.assocs hist
-    --let showHistAddr (addr, n) =
-    --      let blks = RM.values $ addrRange addr addr `RM.containing` blkMap
-    --      in show (n, addr, map blkName blks)
-    --mapM_ (putStrLn . showHistAddr) $ sortBy (flip $ comparing snd) $ M.assocs hist
+    let showHistAddr (addr, n) =
+          let blks = RM.values $ addrRange addr addr `RM.containing` blkMap
+          in show (n, addr, map blkName blks, map (map showSourceNote . blkSrcNotes) blks)
+    mapM_ (putStrLn . showHistAddr) $ sortBy (flip $ comparing snd) $ M.assocs hist
     return ()
 
 printTree :: Int -> Record -> IO Int
