@@ -39,9 +39,16 @@ instance Show Address where
 
 type BlockMap = RM.RangeMap Block
 
+data LineCol = LineCol { lineNumber, columnNumber :: !Int }
+data Span = Span { spanStart, spanEnd :: !LineCol }
+data SourceNote = SourceNote { srcFile :: !BSS.ShortByteString
+                             , srcSpan :: !Span
+                             }
+
 data Block = Block { blkName :: {-# UNPACK #-} !BSS.ShortByteString
                    , blkChildren :: [Block]
                    , blkRegions :: [Range]
+                   , blkSrcNotes :: [SourceNote]
                    }
 
 blockToBlockMap :: Block -> BlockMap
@@ -60,13 +67,15 @@ parseBlocks = evalStateT go
         Just blk -> lift (yield blk) >> go
         Nothing  -> return ()
 
+    emptyBlock name = Block name mempty mempty mempty
+
     goBlock :: Monad m => Parser Record m (Maybe Block)
     goBlock = do
       res <- draw
       case res of
         Just r
           | r `isOfType` 200 -> do
-              blk <- goBlockBody $ Block (BSS.toShort $ BSL.toStrict $ recBody r) mempty mempty
+              blk <- goBlockBody $ emptyBlock (BSS.toShort $ BSL.toStrict $ recBody r)
               return $ Just blk
           | otherwise -> goBlock
         _ -> return Nothing
@@ -76,16 +85,32 @@ parseBlocks = evalStateT go
       case res of
         Just r
           | r `isOfType` 200 -> do
-              child <- goBlockBody $ Block (BSS.toShort $ BSL.toStrict $ recBody r) mempty mempty
+              child <- goBlockBody $ emptyBlock (BSS.toShort $ BSL.toStrict $ recBody r)
               goBlockBody $ blk { blkChildren = child : blkChildren blk }
           | r `isOfType` 201 ->
               return blk
           | r `isOfType` 202 -> do
               let Right (_, _, rng) = runGetOrFail getRange (recBody r)
               rng `seq` goBlockBody blk { blkRegions = rng : blkRegions blk }
+          | r `isOfType` 203 -> do
+              let Right (_, _, snote) = runGetOrFail getSourceNote (recBody r)
+              snote `seq` goBlockBody blk { blkSrcNotes = snote : blkSrcNotes blk }
           | otherwise        ->
               goBlockBody blk
         Nothing -> return blk
+
+    toBSS :: BSL.ByteString -> BSS.ShortByteString
+    toBSS = BSS.toShort . BSL.toStrict
+
+    getSourceNote :: Get SourceNote
+    getSourceNote = SourceNote <$> fmap toBSS getLazyByteStringNul <*> getSpan
+
+    getSpan :: Get Span
+    getSpan = Span <$> getLineCol <*> getLineCol
+
+    getLineCol :: Get LineCol
+    getLineCol = LineCol <$> fmap fromIntegral getWord32be
+                         <*> fmap fromIntegral getWord32be
 
     getRange :: Get Range
     getRange = addrRange <$> getAddress <*> getAddress
