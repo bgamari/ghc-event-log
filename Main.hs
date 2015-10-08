@@ -18,7 +18,7 @@ main = do
     --PP.foldM (\indent -> printTree indent . snd) (pure 0) pure (records evlog)
     --histogram (records evlog >-> PP.map snd) >>= putStrLn . unlines . map show . M.assocs
     --runEffect $ for (records evlog >-> PP.map snd >-> getSamples) (liftIO . mapM_ (\(Sample addr _) -> print addr))
-    (blkMap, rest) <- buildBlockMap $ blockEventsAll (records evlog >-> PP.map snd)
+    (blkMap, rest) <- buildBlockMap $ blockEvents $ records evlog >-> PP.map snd
     hist <- histogram (rest >-> getSamples)
 
     let showHistAddr (addr, n) =

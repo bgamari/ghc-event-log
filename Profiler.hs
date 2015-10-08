@@ -4,7 +4,7 @@
 
 module Profiler
     ( -- * Parsing program metdata
-      blockEvents, blockEventsAll, Block(..)
+      blockEvents, Block(..)
     , buildBlockMap, BlockMap
       -- ** Source notes
     , SourceNote(..)
@@ -79,7 +79,7 @@ buildBlockMap prod =
 buildBlockMap' :: Monad m => BlockEvent -> StateT [Block] m BlockMap
 buildBlockMap' (StartBlockEv name) = do
     parents <- get
-    push $ Block name parents mempty
+    push $! Block name parents mempty
     return mempty
 buildBlockMap' EndBlockEv = pop >> return mempty
 buildBlockMap' (AddressRangeEv rng) = do
@@ -102,7 +102,7 @@ modifyHead f = do
     push $! f x
 
 push :: Monad m => a -> StateT [a] m ()
-push !a = modify (a:)
+push a = modify (a:)
 
 pop :: Monad m => StateT [a] m a
 pop = do
@@ -148,22 +148,18 @@ skipWhile pred = go
           | otherwise -> undraw' r
         _ -> return ()
 
-blockEvents :: Monad m
-            => Producer Record m () -> Producer BlockEvent m (Producer Record m ())
+blockEvents :: Monad m => Producer Record m () -> Producer BlockEvent m (Producer Record m ())
 blockEvents prod =
-    mapWhileMaybe parseBlockEvent (prod >-> PP.dropWhile (isNothing . parseBlockEvent))
-
-blockEventsAll :: Monad m
-               => Producer Record m () -> Producer BlockEvent m (Producer Record m ())
-blockEventsAll prod = do
-    prod >-> PP.mapFoldable parseBlockEvent
-    return prod
+     takeWhile' (not . isSample) (prod >-> PP.dropWhile (isNothing . parseBlockEvent))
+     >-> PP.mapFoldable parseBlockEvent
+   where
+     isSample = (`isOfType` 210)
 
 -- | A record describing the flattened basic block tree
-data BlockEvent = StartBlockEv BSS.ShortByteString
+data BlockEvent = StartBlockEv !BSS.ShortByteString
                 | EndBlockEv
-                | AddressRangeEv Range
-                | SourceNoteEv SourceNote
+                | AddressRangeEv !Range
+                | SourceNoteEv !SourceNote
 
 -- | Parses all of the program block records from an event log, ultimately
 -- returning a producer consisting of all of the left-overs, starting with the first
@@ -196,18 +192,6 @@ parseBlockEvent r
     getLineCol = LineCol <$> fmap fromIntegral getWord32be
                          <*> fmap fromIntegral getWord32be
 
-mapWhileMaybe :: Monad m
-              => (a -> Maybe b) -> Producer a m r -> Producer b m (Producer a m r)
-mapWhileMaybe f = go
-  where
-    go prod = do
-      mb <- lift $ next prod
-      case mb of
-        Left r -> return $ return r
-        Right (x, prod')
-          | Just y <- f x -> yield y >> go prod'
-          | otherwise     -> return (yield x >> prod')
-
 addrRange :: Address -> Address -> Range
 addrRange (Addr a) (Addr b) = Rng a b
 
@@ -215,6 +199,19 @@ getAddress :: Get Address
 getAddress = Addr . fromIntegral <$> getWord64be
 
 type Histogram = M.Map Address Int
+
+takeWhile' :: Monad m
+           => (a -> Bool) -> Producer a m r
+           -> Producer a m (Producer a m r)
+takeWhile' pred = go
+  where
+    go prod = do
+        mb <- lift $ next prod
+        case mb of
+          Right (x, prod')
+            | pred x    -> yield x >> go prod'
+            | otherwise -> return (yield x >> prod')
+          Left r        -> return $ return r
 
 histogram :: Monad m => Producer [Sample] m () -> m Histogram
 histogram = PP.fold (foldr addSample) M.empty id
