@@ -6,6 +6,7 @@ module Profiler
     ( -- * Parsing program metdata
       blockEvents, Block(..)
     , buildBlockMap, BlockMap
+    , BlockEvent(..)
       -- ** Source notes
     , SourceNote(..)
     , LineCol(..)
@@ -160,6 +161,7 @@ data BlockEvent = StartBlockEv !BSS.ShortByteString
                 | EndBlockEv
                 | AddressRangeEv !Range
                 | SourceNoteEv !SourceNote
+                deriving (Show)
 
 -- | Parses all of the program block records from an event log, ultimately
 -- returning a producer consisting of all of the left-overs, starting with the first

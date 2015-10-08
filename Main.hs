@@ -3,6 +3,8 @@ import Data.Word
 import qualified Pipes.Prelude as PP
 import System.IO
 import qualified Data.Map.Strict as M
+import Control.Monad.State
+import Control.Monad (forever)
 
 import Data.List (sortBy)
 import Data.Ord (comparing)
@@ -14,10 +16,8 @@ main :: IO ()
 main = do
     hSetBuffering stderr NoBuffering
     evlog <- either error id <$> fromFile "test.eventlog"
-    --runEffect $ for (records evlog) $ \(_,r) -> liftIO $ print r
-    --PP.foldM (\indent -> printTree indent . snd) (pure 0) pure (records evlog)
-    --histogram (records evlog >-> PP.map snd) >>= putStrLn . unlines . map show . M.assocs
-    --runEffect $ for (records evlog >-> PP.map snd >-> getSamples) (liftIO . mapM_ (\(Sample addr _) -> print addr))
+    runStateT (runEffect $ void (blockEvents $ records evlog >-> PP.map snd) >-> printTree >-> PP.stdoutLn) 0
+
     (blkMap, rest) <- buildBlockMap $ blockEvents $ records evlog >-> PP.map snd
     hist <- histogram (rest >-> getSamples)
 
@@ -27,11 +27,22 @@ main = do
     mapM_ (putStrLn . showHistAddr) $ sortBy (flip $ comparing snd) $ M.assocs hist
     return ()
 
-printTree :: Int -> Record -> IO Int
-printTree n r
-  | r `isOfType` 200 = return (n+1)
-  | r `isOfType` 201 = return (n-1)
-  | otherwise        = putStrLn (replicate (2*n) ' ' ++ show r) >> return n
+printTree :: Monad m => Pipe BlockEvent String (StateT Int m) r
+printTree = zipWithDepth >-> PP.map printEvent
+  where
+    printEvent (r, n) = replicate (2*n) ' ' ++ show r
+
+zipWithDepth :: Monad m => Pipe BlockEvent (BlockEvent, Int) (StateT Int m) r
+zipWithDepth = forever $ do
+    r <- await
+    let yieldWithDepth = do depth <- get
+                            yield (r, depth)
+    case r of
+      StartBlockEv _ -> do
+        yieldWithDepth
+        modify (+1)
+      EndBlockEv     -> modify (subtract 1)
+      _              -> yieldWithDepth
 
 isOfType :: Record -> Word16 -> Bool
 isOfType r n = evtEventType (recEventType r) == EventType n
