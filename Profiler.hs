@@ -1,9 +1,11 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Profiler
     ( -- * Parsing program metdata
-      parseBlocks, Block(..)
-    , blockToBlockMap, BlockMap
+      blockEvents, blockEventsAll, Block(..)
+    , buildBlockMap, BlockMap
       -- ** Source notes
     , SourceNote(..)
     , LineCol(..)
@@ -16,12 +18,11 @@ module Profiler
     ) where
 
 import Control.Applicative (many)
-import Control.Monad (forever)
 import Data.Bits
+import Data.Maybe (isNothing)
 import Data.Word
 import Data.Char -- FIXME
 import Data.Monoid
-import Data.Foldable
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Short as BSS
 import qualified Data.ByteString as BS
@@ -30,7 +31,7 @@ import Numeric (showHex)
 
 import Data.Binary.Get
 import Pipes
-import Pipes.Parse
+import Control.Monad.State
 import qualified Pipes.Prelude as PP
 
 import EventLog
@@ -46,28 +47,69 @@ instance Show Address where
 type BlockMap = RM.RangeMap Block
 
 data LineCol = LineCol { lineNumber, columnNumber :: !Int }
+             deriving (Show)
+
 data Span = Span { spanStart, spanEnd :: !LineCol }
+          deriving (Show)
+
 data SourceNote = SourceNote { srcFile :: !BSS.ShortByteString
                              , srcSpan :: !Span
                              }
+                deriving (Show)
 
 data Block = Block { blkName :: {-# UNPACK #-} !BSS.ShortByteString
-                   , blkChildren :: [Block]
-                   , blkRegions :: [Range]
+                   , blkParents :: [Block]
                    , blkSrcNotes :: [SourceNote]
                    }
+           deriving (Show)
 
 showSourceNote :: SourceNote -> String
 showSourceNote (SourceNote f (Span s e)) =
-    map (chr . fromIntegral) (BSS.unpack f)++":"++showLC s++"-"++showLC s
+    map (chr . fromIntegral) (BSS.unpack f)++":"++showLC s++"-"++showLC e
   where
     showLC (LineCol l c) = show l++"."++show c
 
-blockToBlockMap :: Block -> BlockMap
-blockToBlockMap = go
-  where
-    go blk = foldMap (`RM.singleton` blk) (blkRegions blk) <> foldMap go (blkChildren blk)
-{-# INLINE blockToBlockMap #-}
+buildBlockMap :: Monad m => Producer BlockEvent m a -> m (BlockMap, a)
+buildBlockMap prod =
+    evalStateT (PP.foldM' (\accum blkev -> (accum <>) <$> buildBlockMap' blkev)
+                          (pure mempty) pure
+                          (hoist lift prod)
+               ) []
+
+buildBlockMap' :: Monad m => BlockEvent -> StateT [Block] m BlockMap
+buildBlockMap' (StartBlockEv name) = do
+    parents <- get
+    push $ Block name parents mempty
+    return mempty
+buildBlockMap' EndBlockEv = pop >> return mempty
+buildBlockMap' (AddressRangeEv rng) = do
+    blk <- getHead
+    return $ RM.singleton rng blk
+buildBlockMap' (SourceNoteEv srcnote) = do
+    modifyHead $ \blk -> blk {blkSrcNotes = srcnote : blkSrcNotes blk}
+    return mempty
+
+getHead :: Monad m => StateT [a] m a
+getHead = do
+    xs <- get
+    case xs of
+      []   -> error "getHead: Unexpected empty stack"
+      x:xs -> return x
+
+modifyHead :: Monad m => (a -> a) -> StateT [a] m ()
+modifyHead f = do
+    x <- pop
+    push $! f x
+
+push :: Monad m => a -> StateT [a] m ()
+push !a = modify (a:)
+
+pop :: Monad m => StateT [a] m a
+pop = do
+    xs <- get
+    case xs of
+      []   -> error "pop: Unexpected empty stack"
+      x:xs -> put xs >> return x
 
 parseFail :: String -> Get a -> BSL.ByteString -> a
 parseFail thing get bs =
@@ -75,50 +117,74 @@ parseFail thing get bs =
       Left (_, _, e) -> error $ "Failed to parse "++thing++" from "++show bs++": "++e
       Right (_, _, r) -> r
 
-parseBlocks :: Monad m => Producer Record (Producer Block m) () -> Producer Block m ()
-parseBlocks = evalStateT go
+type Parser' a t m r = forall x. StateT (Producer a m x) (t m) r
+
+undraw' :: (Monad m, Monad (t m), MonadTrans t)
+        => a -> StateT (Producer a m x) (t m) ()
+undraw' x = modify (yield x >>)
+
+draw' :: (Monad m, Monad (t m), MonadTrans t)
+      => StateT (Producer a m x) (t m) (Maybe a)
+draw' = do
+  p <- get
+  x <- lift $ lift (next p)
+  case x of
+    Left r -> do
+      put (return r)
+      return Nothing
+    Right (a, p') -> do
+      put p'
+      return (Just a)
+
+skipWhile :: (Monad m, Monad (t m), MonadTrans t)
+          => (a -> Bool) -> Parser' a t m ()
+skipWhile pred = go
   where
-    go :: Monad m => Parser Record (Producer Block m) ()
     go = do
-      mblk <- goBlock
-      case mblk of
-        Just blk -> lift (yield blk) >> go
-        Nothing  -> return ()
-
-    emptyBlock name = Block name mempty mempty mempty
-
-    goBlock :: Monad m => Parser Record m (Maybe Block)
-    goBlock = do
-      res <- draw
-      case res of
+      x <- draw'
+      case x of
         Just r
-          | r `isOfType` 200 -> do
-              blk <- goBlockBody $ emptyBlock (BSS.toShort $ BSL.toStrict $ recBody r)
-              return $ Just blk
-          | otherwise -> goBlock
-        _ -> return Nothing
+          | pred r -> go
+          | otherwise -> undraw' r
+        _ -> return ()
 
-    goBlockBody !blk = do
-      res <- draw
-      case res of
-        Just r
-          | r `isOfType` 200 -> do
-              child <- goBlockBody $ emptyBlock (BSS.toShort $ BSL.toStrict $ recBody r)
-              goBlockBody $ blk { blkChildren = child : blkChildren blk }
-          | r `isOfType` 201 ->
-              return blk
-          | r `isOfType` 202 -> do
-              let rng = parseFail "range" getRange (recBody r)
-              rng `seq` goBlockBody blk { blkRegions = rng : blkRegions blk }
-          | r `isOfType` 203 -> do
-              let snote = parseFail "source note" getSourceNote (recBody r)
-              snote `seq` goBlockBody blk { blkSrcNotes = snote : blkSrcNotes blk }
-          | otherwise        ->
-              goBlockBody blk
-        Nothing -> return blk
+blockEvents :: Monad m
+            => Producer Record m () -> Producer BlockEvent m (Producer Record m ())
+blockEvents prod =
+    mapWhileMaybe parseBlockEvent (prod >-> PP.dropWhile (isNothing . parseBlockEvent))
 
+blockEventsAll :: Monad m
+               => Producer Record m () -> Producer BlockEvent m (Producer Record m ())
+blockEventsAll prod = do
+    prod >-> PP.mapFoldable parseBlockEvent
+    return prod
+
+-- | A record describing the flattened basic block tree
+data BlockEvent = StartBlockEv BSS.ShortByteString
+                | EndBlockEv
+                | AddressRangeEv Range
+                | SourceNoteEv SourceNote
+
+-- | Parses all of the program block records from an event log, ultimately
+-- returning a producer consisting of all of the left-overs, starting with the first
+-- non-program-block event.
+parseBlockEvent :: Record -> Maybe BlockEvent
+parseBlockEvent r
+  | r `isOfType` 200 =
+    Just $ StartBlockEv $ toBSS $ recBody r
+  | r `isOfType` 201 =
+    Just $ EndBlockEv
+  | r `isOfType` 202 =
+    Just $ AddressRangeEv $ parseFail "address range" getRange (recBody r)
+  | r `isOfType` 203 =
+    Just $ SourceNoteEv $ parseFail "source note" getSourceNote (recBody r)
+  | otherwise =
+    Nothing
+  where
     toBSS :: BSL.ByteString -> BSS.ShortByteString
     toBSS = BSS.toShort . BSL.toStrict
+
+    getRange = addrRange <$> getAddress <*> getAddress
 
     getSourceNote :: Get SourceNote
     getSourceNote = SourceNote <$> fmap toBSS getLazyByteStringNul <*> getSpan
@@ -130,9 +196,17 @@ parseBlocks = evalStateT go
     getLineCol = LineCol <$> fmap fromIntegral getWord32be
                          <*> fmap fromIntegral getWord32be
 
-    getRange :: Get Range
-    getRange = addrRange <$> getAddress <*> getAddress
-{-# INLINEABLE parseBlocks #-}
+mapWhileMaybe :: Monad m
+              => (a -> Maybe b) -> Producer a m r -> Producer b m (Producer a m r)
+mapWhileMaybe f = go
+  where
+    go prod = do
+      mb <- lift $ next prod
+      case mb of
+        Left r -> return $ return r
+        Right (x, prod')
+          | Just y <- f x -> yield y >> go prod'
+          | otherwise     -> return (yield x >> prod')
 
 addrRange :: Address -> Address -> Range
 addrRange (Addr a) (Addr b) = Rng a b

@@ -3,7 +3,6 @@ import Data.Word
 import qualified Pipes.Prelude as PP
 import System.IO
 import qualified Data.Map.Strict as M
-import Control.Arrow (first)
 
 import Data.List (sortBy)
 import Data.Ord (comparing)
@@ -11,6 +10,7 @@ import qualified IntRangeMap as RM
 import EventLog
 import Profiler
 
+main :: IO ()
 main = do
     hSetBuffering stderr NoBuffering
     evlog <- either error id <$> fromFile "test.eventlog"
@@ -18,10 +18,8 @@ main = do
     --PP.foldM (\indent -> printTree indent . snd) (pure 0) pure (records evlog)
     --histogram (records evlog >-> PP.map snd) >>= putStrLn . unlines . map show . M.assocs
     --runEffect $ for (records evlog >-> PP.map snd >-> getSamples) (liftIO . mapM_ (\(Sample addr _) -> print addr))
-    (blkMap,_) <- {-# SCC "blks" #-}
-              PP.fold' (\a b -> a `mappend` blockToBlockMap b) mempty id
-              $ parseBlocks $ {-# SCC "records" #-}records evlog >-> PP.map snd
-    hist <- {-# SCC "hist" #-}histogram (each (recordsList evlog) >-> PP.map snd >-> getSamples)
+    (blkMap, rest) <- buildBlockMap $ blockEventsAll (records evlog >-> PP.map snd)
+    hist <- histogram (rest >-> getSamples)
 
     let showHistAddr (addr, n) =
           let blks = RM.values $ addrRange addr addr `RM.containing` blkMap
